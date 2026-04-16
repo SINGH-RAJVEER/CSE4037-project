@@ -1,14 +1,37 @@
 services:
   application:
     build:
-      context: ./application
+      context: .
+      dockerfile: application/Dockerfile
     ports:
       - "3000:3000"
-    restart: always
+    environment:
+      - NODE_ENV=production
+      - CHESS_ENGINE_URL=http://engine:8080
+      - DATABASE_URL=/data/chess.db
+    volumes:
+      - sqlite_data:/data
+    depends_on:
+      engine:
+        condition: service_healthy
+    restart: unless-stopped
 
   engine:
     build:
       context: ./engine
     ports:
       - "8080:8080"
-    restart: always
+    environment:
+      - CHESS_MODEL_PATH=/app/model.onnx
+    volumes:
+      - ./engine/model.onnx:/app/model.onnx:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  sqlite_data:

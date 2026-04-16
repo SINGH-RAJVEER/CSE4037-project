@@ -1,1 +1,10 @@
 .vercel
+node_modules/
+.turbo/
+.output/
+*.db
+
+# Model artifacts
+*.onnx
+engine/train/checkpoints/
+engine/train/.venv/

@@ -1,130 +1,191 @@
-import { createSignal, For, Show, createMemo, createEffect } from "solid-js";
-import { createFileRoute } from "@tanstack/solid-router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/solid-query";
-import {
-  getBoard,
-  getMoves,
-  makeMove,
-  resetGame,
-  undoMove,
-} from "../lib/index";
-import type { Color, PieceType } from "../lib/index";
-import Header from "../components/header";
+import { useState, useMemo, useEffect } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { getBoard, getMoves, makeMove, resetGame, undoMove } from "../lib/api";
+import type { Color, PieceType } from "../lib/api";
+
+type EngineType = "minimax" | "neural";
 
 const PIECE_SYMBOLS: Record<Color, Record<PieceType, string>> = {
-  White: {
-    Pawn: "♙",
-    Knight: "♘",
-    Bishop: "♗",
-    Rook: "♖",
-    Queen: "♕",
-    King: "♔",
+  White: { Pawn: "♙", Knight: "♘", Bishop: "♗", Rook: "♖", Queen: "♕", King: "♔" },
+  Black: { Pawn: "♟", Knight: "♞", Bishop: "♝", Rook: "♜", Queen: "♛", King: "♚" },
+};
+
+function loadEngineType(): EngineType {
+  if (typeof window === "undefined") return "minimax";
+  try {
+    const stored = localStorage.getItem("chess_engine_type");
+    if (stored === "neural" || stored === "minimax") return stored;
+  } catch (_) {}
+  return "minimax";
+}
+
+function loadPendingMove() {
+  if (typeof window === "undefined") return null;
+  try {
+    const stored = localStorage.getItem("chess_pending_move");
+    return stored ? (JSON.parse(stored) as { from: number; to: number }) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+const S = {
+  root: {
+    height: "100dvh",
+    display: "flex",
+    flexDirection: "column" as const,
+    background: "#0c0c0c",
+    color: "#c8c4bc",
+    fontFamily: "ui-monospace, 'SF Mono', 'Fira Code', monospace",
+    overflow: "hidden",
   },
-  Black: {
-    Pawn: "♟",
-    Knight: "♞",
-    Bishop: "♝",
-    Rook: "♜",
-    Queen: "♛",
-    King: "♚",
+  boardArea: {
+    flex: "1",
+    minHeight: "0",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "8px 8px 0",
+  },
+  boardWrapper: (size: string) => ({
+    position: "relative" as const,
+    width: size,
+    height: size,
+  }),
+  board: {
+    width: "100%",
+    height: "100%",
+    display: "grid",
+    gridTemplateColumns: "repeat(8, 1fr)",
+    gridTemplateRows: "repeat(8, 1fr)",
+    border: "1px solid #2a2a2a",
+    position: "relative" as const,
+  },
+  controls: {
+    height: "44px",
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    padding: "0 12px",
+    borderTop: "1px solid #1e1e1e",
+    flexShrink: "0" as const,
+  },
+  history: {
+    height: "28px",
+    overflowX: "auto" as const,
+    overflowY: "hidden" as const,
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    padding: "0 12px",
+    borderTop: "1px solid #161616",
+    flexShrink: "0" as const,
+    scrollbarWidth: "none" as const,
+  },
+  btn: (active?: boolean, color?: string) => ({
+    padding: "3px 10px",
+    background: active ? (color ?? "#1e1b4b") : "transparent",
+    border: `1px solid ${active ? (color ? color.replace("1b4b", "3730a3") : "#4338ca") : "#2e2e2e"}`,
+    color: active ? (color ? "#a7f3d0" : "#a5b4fc") : "#6b7280",
+    fontFamily: "inherit",
+    fontSize: "11px",
+    fontWeight: "bold",
+    textTransform: "uppercase" as const,
+    letterSpacing: "0.07em",
+    cursor: "pointer",
+    transition: "opacity 0.1s",
+  }),
+  btnGreen: {
+    padding: "3px 12px",
+    background: "#052e16",
+    border: "1px solid #166534",
+    color: "#86efac",
+    fontFamily: "inherit",
+    fontSize: "11px",
+    fontWeight: "bold",
+    textTransform: "uppercase" as const,
+    letterSpacing: "0.07em",
+    cursor: "pointer",
   },
 };
 
-export const Route = createFileRoute("/")({
-  component: Home,
-});
-
-function Home() {
+export default function ChessGame() {
   const queryClient = useQueryClient();
-  const [rotation, setRotation] = createSignal(0);
 
-  const storedMoves = () => {
-    if (typeof window !== "undefined") {
-      try {
-        const stored = localStorage.getItem("chess_pending_move");
-        return stored ? JSON.parse(stored) : null;
-      } catch (e) {
-        console.error("Failed to parse pending move", e);
-      }
-    }
-    return null;
+  const [engineType, setEngineTypeState] = useState<EngineType>(loadEngineType);
+  const setEngineType = (t: EngineType) => {
+    setEngineTypeState(t);
+    try { localStorage.setItem("chess_engine_type", t); } catch (_) {}
   };
 
-  // Initialize pendingMove from localStorage if available
-  const [pendingMove, setPendingMove] = createSignal<{
-    from: number;
-    to: number;
-  } | null>(storedMoves());
+  const [pendingMove, setPendingMoveState] = useState<{ from: number; to: number } | null>(loadPendingMove);
+  const setPendingMove = (m: { from: number; to: number } | null) => {
+    setPendingMoveState(m);
+    try {
+      if (m) localStorage.setItem("chess_pending_move", JSON.stringify(m));
+      else localStorage.removeItem("chess_pending_move");
+    } catch (_) {}
+  };
 
-  // Persist pendingMove to localStorage
-  createEffect(() => {
-    if (typeof window !== "undefined") {
-      const move = pendingMove();
-      if (move) {
-        localStorage.setItem("chess_pending_move", JSON.stringify(move));
-      } else {
-        localStorage.removeItem("chess_pending_move");
-      }
-    }
-  });
+  const [selectedSquare, setSelectedSquare] = useState<number | null>(null);
+  const [validMoves, setValidMoves] = useState<number[]>([]);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const boardQuery = useQuery(() => ({
-    queryKey: ["board", "vs_player"],
-    queryFn: async () => {
-      try {
-        return await getBoard({ data: { mode: "vs_player" } });
-      } catch (e) {
-        console.error("✗ Failed to fetch board:", e);
-        throw e;
-      }
-    },
+  const boardQuery = useQuery({
+    queryKey: ["board"],
+    queryFn: () => getBoard(),
     staleTime: 0,
     refetchOnWindowFocus: true,
-  }));
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (data && data.turn === "Black" && data.status === "Ongoing") return 1000;
+      return false;
+    },
+  });
 
-  const moveMutation = useMutation(() => ({
-    mutationFn: (args: { data: { from: number; to: number } }) => {
+  useEffect(() => {
+    if (boardQuery.data && (boardQuery.data as { mode?: string }).mode === "vs_player") {
+      resetMutation.mutate();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardQuery.data]);
+
+  const moveMutation = useMutation({
+    mutationFn: (args: { from: number; to: number }) => {
       if (!boardQuery.data?.id) throw new Error("Game ID not found");
-      return makeMove({ data: { ...args.data, gameId: boardQuery.data.id } });
+      return makeMove(args.from, args.to, boardQuery.data.id, engineType);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["board", "vs_player"] });
+      await queryClient.invalidateQueries({ queryKey: ["board"] });
       setPendingMove(null);
     },
     onError: (e: unknown) => {
-      const msg =
-        e && typeof e === "object" && "message" in e
-          ? (e as any).message
-          : String(e);
+      const msg = e && typeof e === "object" && "message" in e ? (e as Error).message : String(e);
       setErrorMsg(`Move failed: ${msg}`);
       setTimeout(() => setErrorMsg(null), 3000);
-      // Keep pending move so user can retry or cancel
     },
-  }));
+  });
 
-  const undoMutation = useMutation(() => ({
-    mutationFn: () => {
+  const undoMutation = useMutation({
+    mutationFn: async () => {
       if (!boardQuery.data?.id) throw new Error("Game ID not found");
-      return undoMove({ data: { gameId: boardQuery.data.id } });
+      const moveCount = boardQuery.data?.moves?.length ?? 0;
+      if (moveCount >= 2) {
+        await undoMove(boardQuery.data.id);
+        await undoMove(boardQuery.data.id);
+      } else if (moveCount === 1) {
+        await undoMove(boardQuery.data.id);
+      }
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["board", "vs_player"] });
-
-      setTimeout(() => setSuccessMsg(null), 2000);
-    },
-
-    onError: (e: any) => {
-      setErrorMsg(`Undo failed: ${e.message}`);
-
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["board"] }); },
+    onError: (e: Error) => {
+      setErrorMsg(`Takeback failed: ${e.message}`);
       setTimeout(() => setErrorMsg(null), 3000);
     },
-  }));
+  });
 
-  const resetMutation = useMutation(() => ({
-    mutationFn: (opts?: {
-      mode: "vs_player" | "vs_computer";
-      timeControl: number;
-    }) => resetGame({ data: opts }),
+  const resetMutation = useMutation({
+    mutationFn: () => resetGame(),
     onSuccess: async () => {
       await boardQuery.refetch();
       setSelectedSquare(null);
@@ -132,596 +193,265 @@ function Home() {
       setPendingMove(null);
       setErrorMsg(null);
     },
-    onError: (e: any) => {
-      setErrorMsg(
-        `Failed to reset game: ${e instanceof Error ? e.message : String(e)}`,
-      );
+    onError: (e: Error) => {
+      setErrorMsg(`Reset failed: ${e.message}`);
     },
-  }));
-
-  // Timer Logic
-  const [now, setNow] = createSignal(Date.now());
-
-  createEffect(() => {
-    const interval = setInterval(() => {
-      setNow(Date.now());
-    }, 100);
-    return () => clearInterval(interval);
   });
 
-  const formatTime = (ms: number) => {
-    if (boardQuery.data?.timeControl === 0) return "∞";
-    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-  };
+  const pieces = useMemo(() => {
+    const base = boardQuery.data?.pieces ?? [];
+    if (!pendingMove) return base;
+    return base
+      .filter((p) => p.square !== pendingMove.to)
+      .map((p) => (p.square === pendingMove.from ? { ...p, square: pendingMove.to } : p));
+  }, [boardQuery.data, pendingMove]);
 
-  const whiteTime = createMemo(() => {
-    if (!boardQuery.data) return 0;
-    const { turn, status, whiteTimeRemaining, lastMoveTime, timeControl } =
-      boardQuery.data;
-    if (timeControl === 0) return Number.MAX_SAFE_INTEGER;
-    if (turn === "White" && status === "Ongoing" && lastMoveTime) {
-      const elapsed = now() - lastMoveTime;
-      return Math.max(0, whiteTimeRemaining - elapsed);
-    }
-    return whiteTimeRemaining;
-  });
+  const turn = boardQuery.data?.turn ?? "White";
+  const getPieceAt = (sq: number) => pieces.find((p) => p.square === sq);
 
-  const blackTime = createMemo(() => {
-    if (!boardQuery.data) return 0;
-    const { turn, status, blackTimeRemaining, lastMoveTime, timeControl } =
-      boardQuery.data;
-    if (timeControl === 0) return Number.MAX_SAFE_INTEGER;
-    if (turn === "Black" && status === "Ongoing" && lastMoveTime) {
-      const elapsed = now() - lastMoveTime;
-      return Math.max(0, blackTimeRemaining - elapsed);
-    }
-    return blackTimeRemaining;
-  });
-
-  // Derived pieces with pending move applied
-
-  const pieces = createMemo(() => {
-    const basePieces = boardQuery.data?.pieces || [];
-
-    const pending = pendingMove();
-
-    if (!pending) return basePieces;
-
-    // Simulate the move locally for display
-
-    return basePieces
-
-      .filter((p) => p.square !== pending.to) // Remove captured piece
-
-      .map((p) => {
-        if (p.square === pending.from) {
-          return { ...p, square: pending.to };
-        }
-
-        return p;
-      });
-  });
-
-  const turn = createMemo(() => boardQuery.data?.turn || "White");
-
-  // Rotation logic - depends on server turn (rotates after submit)
-
-  createEffect(() => {
-    if (turn() === "Black") {
-      setRotation(180);
-    } else {
-      setRotation(0);
-    }
-  });
-
-  const [selectedSquare, setSelectedSquare] = createSignal<number | null>(null);
-  const [validMoves, setValidMoves] = createSignal<number[]>([]);
-  const [errorMsg, setErrorMsg] = createSignal<string | null>(null);
-  const [successMsg, setSuccessMsg] = createSignal<string | null>(null);
-
-  const getPieceAt = (squareIndex: number) => {
-    return pieces().find((p) => p.square === squareIndex);
-  };
-
-  const handleSquareClick = async (squareIndex: number) => {
+  const handleSquareClick = async (sq: number) => {
     if (!boardQuery.data) return;
-
     if (boardQuery.data.status !== "Ongoing") return;
+    if (turn !== "White") return;
+    if (pendingMove) return;
 
-    // If there is a pending move, interactions are limited to:
+    const clickedPiece = pieces.find((p) => p.square === sq);
 
-    // 1. Clicking "Confirm" (handled by button)
-
-    // 2. Clicking "Cancel" (handled by button)
-
-    // 3. Changing selection? Let's say we allow changing the move if they click original piece?
-
-    // For simplicity, if pending move exists, block board clicks or treat as cancel?
-
-    // The prompt says "player makes a move and then has to press submit".
-
-    // Usually visual feedback implies the piece moved.
-
-    if (pendingMove()) {
-      // Optional: Allow clicking the board to cancel?
-
-      // For now, let's enforce using the Cancel button to avoid confusion.
-
-      return;
-    }
-
-    const currentPieces = pieces(); // This uses the memo, but since pending is null, it's base pieces
-
-    const clickedPiece = currentPieces.find((p) => p.square === squareIndex);
-
-    const selected = selectedSquare();
-
-    // Case 1: Select a piece
-
-    if (clickedPiece && clickedPiece.color === boardQuery.data.turn) {
-      if (selected === squareIndex) {
-        setSelectedSquare(null);
-
-        setValidMoves([]);
-
-        return;
-      }
-
-      setSelectedSquare(squareIndex);
-
+    if (clickedPiece && clickedPiece.color === "White") {
+      if (selectedSquare === sq) { setSelectedSquare(null); setValidMoves([]); return; }
+      setSelectedSquare(sq);
       setErrorMsg(null);
-
       try {
-        if (!boardQuery.data?.id) return;
-        const moves = await getMoves({
-          data: { square: squareIndex, gameId: boardQuery.data.id },
-        });
-
+        const moves = await getMoves(sq, boardQuery.data.id);
         setValidMoves(Array.isArray(moves) ? moves : []);
-      } catch (e: any) {
-        console.error("✗ Failed to fetch moves:", e);
-
-        setErrorMsg(`API Error: ${e?.message || "Unknown error"}`);
-
+      } catch (e: unknown) {
+        setErrorMsg(`Error: ${e instanceof Error ? e.message : "Unknown"}`);
         setValidMoves([]);
       }
-
       return;
     }
 
-    // Case 2: Move
-
-    if (selected !== null) {
-      if (validMoves().includes(squareIndex)) {
-        // Set Pending Move instead of mutating immediately
-
-        setPendingMove({ from: selected, to: squareIndex });
-
+    if (selectedSquare !== null) {
+      if (validMoves.includes(sq)) {
+        setPendingMove({ from: selectedSquare, to: sq });
         setSelectedSquare(null);
-
         setValidMoves([]);
       } else {
         setSelectedSquare(null);
-
         setValidMoves([]);
       }
     }
   };
 
-  const handleConfirmMove = () => {
-    const pending = pendingMove();
-
-    if (pending) {
-      moveMutation.mutate({ data: pending });
-    }
-  };
-
-  const handleCancelMove = () => {
-    setPendingMove(null);
-  };
-
-  const handleReset = (opts?: {
-    mode: "vs_player" | "vs_computer";
-    timeControl: number;
-  }) => {
-    resetMutation.mutate(opts || { mode: "vs_player", timeControl: 10 });
-  };
+  const boardSize = "min(calc(100vw - 16px), calc(100dvh - 80px))";
 
   return (
-    <div class="min-h-screen bg-gradient-to-br from-stone-900 via-stone-900 to-black font-sans text-stone-200 flex flex-col">
-      <Header
-        onRestart={handleReset}
-        isRestarting={resetMutation.isPending}
-        activeMode="vs_player"
-        currentTimeControl={boardQuery.data?.timeControl}
-      />
-
-      {/* Main Game Area */}
-      <div class="flex-1 flex flex-col items-center justify-center p-4 lg:p-8 overflow-hidden relative">
-        <div class="flex flex-col xl:flex-row items-center justify-center gap-8 w-full max-w-[1800px]">
-          {/* Left Panel: Black Player */}
-          <div class="flex flex-col gap-6 w-full max-w-[300px] xl:h-[800px] xl:justify-center order-2 xl:order-1">
-            <div class="bg-stone-800 p-6 rounded-2xl shadow-xl border border-stone-700 flex flex-col gap-4 items-center text-center relative overflow-hidden">
-              <div class="w-20 h-20 bg-black rounded-2xl shadow-inner flex items-center justify-center text-stone-200 font-bold border-4 border-stone-700 text-3xl mb-2">
-                B
-              </div>
-              <div>
-                <div class="font-extrabold text-2xl leading-tight text-stone-100">
-                  Black
-                </div>
-                <div
-                  class={`text-xs font-bold uppercase tracking-wider ${turn() === "Black" ? "text-emerald-400" : "text-stone-500"}`}
-                >
-                  {turn() === "Black" ? "Your Turn" : "Waiting"}
-                </div>
-                <div
-                  class={`text-4xl font-mono font-bold mt-2 ${turn() === "Black" ? "text-white" : "text-stone-600"}`}
-                >
-                  {formatTime(blackTime())}
-                </div>
-              </div>
-
-              {/* Captured Pieces (White pieces captured by Black) */}
-              <div class="flex flex-wrap justify-center gap-1 min-h-[40px] w-full bg-stone-900/50 rounded-lg p-2 border border-stone-700">
-                <For each={boardQuery.data?.capturedPieces?.white}>
-                  {(p) => (
-                    <span
-                      class="text-3xl filter drop-shadow-sm text-stone-400 hover:scale-125 transition-transform cursor-help"
-                      title={`Captured ${p}`}
-                    >
-                      {PIECE_SYMBOLS.White[p]}
-                    </span>
-                  )}
-                </For>
-                <Show when={!boardQuery.data?.capturedPieces?.white?.length}>
-                  <span class="text-xs text-stone-600 italic self-center">
-                    No captures
-                  </span>
-                </Show>
-              </div>
-
-              {/* Controls for this side (Takeback / Submit) */}
-              <Show
-                when={
-                  (turn() === "White" &&
-                    (boardQuery.data?.moves?.length || 0) > 0) ||
-                  (turn() === "Black" && pendingMove())
-                }
-              >
-                <Show when={turn() === "White"}>
-                  <button
-                    onClick={() => undoMutation.mutate()}
-                    disabled={
-                      undoMutation.isPending ||
-                      (boardQuery.data?.moves?.length || 0) === 0
-                    }
-                    class="w-full mt-4 bg-stone-700 hover:bg-stone-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-black/20 transition-all uppercase tracking-wider text-sm flex items-center justify-center gap-2"
-                  >
-                    <span>↺</span> Takeback
-                  </button>
-                </Show>
-
-                <Show when={turn() === "Black" && pendingMove()}>
-                  <div class="flex gap-2 w-full mt-4">
-                    <button
-                      onClick={handleConfirmMove}
-                      disabled={moveMutation.isPending}
-                      class="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-800 disabled:cursor-not-allowed text-white font-bold py-3 px-2 rounded-xl shadow-lg transition-all uppercase tracking-wider text-sm flex items-center justify-center gap-1"
-                    >
-                      <Show
-                        when={moveMutation.isPending}
-                        fallback={<span>✓ Submit</span>}
-                      >
-                        <span>...</span>
-                      </Show>
-                    </button>
-                    <button
-                      onClick={handleCancelMove}
-                      disabled={moveMutation.isPending}
-                      class="flex-1 bg-stone-600 hover:bg-stone-500 disabled:opacity-50 text-white font-bold py-3 px-2 rounded-xl shadow-lg transition-all uppercase tracking-wider text-sm flex items-center justify-center gap-1"
-                    >
-                      <span>✕</span> Cancel
-                    </button>
-                  </div>
-                </Show>
-              </Show>
+    <div style={S.root}>
+      <div style={S.boardArea}>
+        <div style={S.boardWrapper(boardSize)}>
+          {errorMsg && (
+            <div style={{
+              position: "absolute", top: "-32px", left: "50%", transform: "translateX(-50%)",
+              background: "#450a0a", color: "#fca5a5", border: "1px solid #7f1d1d",
+              padding: "3px 14px", fontSize: "11px", fontWeight: "bold",
+              whiteSpace: "nowrap", zIndex: 50,
+            }}>
+              {errorMsg}
             </div>
-          </div>
+          )}
 
-          {/* Center: Board */}
-          <div class="relative group order-1 xl:order-2">
-            {/* Status Messages */}
-            <div class="absolute -top-16 left-0 w-full flex justify-center h-12 pointer-events-none z-30">
-              <Show when={errorMsg()}>
-                <div class="bg-red-600 text-white px-8 py-3 rounded-full shadow-2xl text-base font-bold animate-bounce flex items-center gap-2 border-4 border-stone-900">
-                  <span>⚠️</span> {errorMsg()}
-                </div>
-              </Show>
-              <Show when={successMsg()}>
-                <div class="bg-emerald-600 text-white px-8 py-3 rounded-full shadow-2xl text-base font-bold flex items-center gap-2 border-4 border-stone-900">
-                  <span>✨</span> {successMsg()}
-                </div>
-              </Show>
-            </div>
+          <div style={S.board}>
+            {Array.from({ length: 64 }, (_, sq) => {
+              const row = Math.floor(sq / 8);
+              const col = sq % 8;
+              const isDark = (row + col) % 2 === 1;
+              const lm = boardQuery.data?.lastMove;
+              const isLastMove = lm && (lm.from === sq || lm.to === sq);
+              const isSelected = selectedSquare === sq;
+              const piece = getPieceAt(sq);
+              const hasPiece = !!piece;
 
-            <div class="w-[80vw] h-[80vw] max-w-[800px] max-h-[800px] bg-stone-700 rounded-xl shadow-2xl overflow-hidden border-[16px] border-stone-950 relative select-none">
-              <div
-                class="grid grid-cols-8 grid-rows-[repeat(8,1fr)] w-full h-full transition-transform duration-1000 cubic-bezier(0.4, 0, 0.2, 1)"
-                style={{ transform: `rotate(${rotation()}deg)` }}
-              >
-                <For each={Array.from({ length: 64 })}>
-                  {(_, index) => {
-                    const squareIndex = index();
-                    const row = Math.floor(squareIndex / 8);
-                    const col = squareIndex % 8;
-                    const isBlack = (row + col) % 2 === 1;
-
-                    const lightSquareColor = "bg-[#f0d9b5]";
-                    const darkSquareColor = "bg-[#b58863]";
-
-                    // Highlight Logic - Reactive
-                    const isLastMove = () => {
-                      const lastMove = boardQuery.data?.lastMove;
-                      return (
-                        lastMove &&
-                        (lastMove.from === squareIndex ||
-                          lastMove.to === squareIndex)
-                      );
-                    };
-
-                    return (
-                      <button
-                        class={`relative w-full h-full flex items-center justify-center focus:outline-none transition-colors duration-200 ${isBlack ? darkSquareColor : lightSquareColor}`}
-                        classList={{
-                          "ring-inset ring-[6px] ring-indigo-500/60 z-10":
-                            selectedSquare() === squareIndex,
-                          "hover:brightness-105":
-                            !selectedSquare() ||
-                            selectedSquare() !== squareIndex,
-                        }}
-                        onClick={() => handleSquareClick(squareIndex)}
-                      >
-                        {/* Rank/File Labels */}
-                        <Show when={col === 0}>
-                          <span
-                            class={`absolute left-1 top-1 text-[10px] sm:text-xs font-black ${isBlack ? "text-[#f0d9b5]" : "text-[#b58863]"} opacity-60`}
-                            style={{
-                              transform: `rotate(${rotation() === 180 ? 180 : 0}deg)`,
-                            }}
-                          >
-                            {8 - row}
-                          </span>
-                        </Show>
-                        <Show when={row === 7}>
-                          <span
-                            class={`absolute right-1 bottom-0.5 text-[10px] sm:text-xs font-black ${isBlack ? "text-[#f0d9b5]" : "text-[#b58863]"} opacity-60`}
-                            style={{
-                              transform: `rotate(${rotation() === 180 ? 180 : 0}deg)`,
-                            }}
-                          >
-                            {String.fromCharCode(97 + col)}
-                          </span>
-                        </Show>
-
-                        {/* Last Move Highlight */}
-                        <Show when={isLastMove()}>
-                          <div class="absolute inset-0 bg-yellow-500/60 pointer-events-none mix-blend-hard-light" />
-                        </Show>
-
-                        {/* Valid Move Indicator */}
-                        <Show when={validMoves().includes(squareIndex)}>
-                          {(() => {
-                            const hasPiece = !!getPieceAt(squareIndex);
-                            return hasPiece ? (
-                              <div class="absolute inset-0 border-[6px] sm:border-[8px] border-rose-500/50 rounded-full m-1 sm:m-2 pointer-events-none animate-pulse" />
-                            ) : (
-                              <div class="w-4 h-4 sm:w-6 sm:h-6 bg-stone-900/40 rounded-full pointer-events-none" />
-                            );
-                          })()}
-                        </Show>
-
-                        {/* Piece */}
-                        {(() => {
-                          const piece = getPieceAt(squareIndex);
-                          return (
-                            <Show when={piece}>
-                              <span
-                                class="text-4xl sm:text-5xl md:text-7xl drop-shadow-2xl transition-all duration-700 ease-in-out cursor-pointer hover:scale-110 active:scale-90 transform-gpu z-20"
-                                style={{
-                                  transform: `rotate(${rotation() === 180 ? 180 : 0}deg)`,
-                                  color:
-                                    piece!.color === "White"
-                                      ? "#ffffff"
-                                      : "#1a1a1a",
-                                  "text-shadow":
-                                    piece!.color === "White"
-                                      ? "0 2px 4px rgba(0,0,0,0.4)"
-                                      : "0 2px 4px rgba(255,255,255,0.1)",
-                                }}
-                              >
-                                {PIECE_SYMBOLS[piece!.color][piece!.piece_type]}
-                              </span>
-                            </Show>
-                          );
-                        })()}
-                      </button>
-                    );
+              return (
+                <button
+                  key={sq}
+                  style={{
+                    position: "relative",
+                    width: "100%",
+                    height: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: isDark ? "#4a4542" : "#c8c4b8",
+                    border: "none",
+                    padding: "0",
+                    cursor: "pointer",
+                    boxShadow: isSelected ? "inset 0 0 0 3px #6366f1" : "none",
+                    zIndex: isSelected ? 10 : "auto",
                   }}
-                </For>
-              </div>
-
-              <Show
-                when={
-                  boardQuery.data?.status &&
-                  boardQuery.data?.status !== "Ongoing"
-                }
-              >
-                <div class="absolute inset-0 bg-stone-900/80 flex items-center justify-center z-50 backdrop-blur-md">
-                  <div class="bg-stone-800 p-12 rounded-3xl shadow-[0_0_100px_rgba(0,0,0,0.5)] text-center border-b-8 border-indigo-600 animate-in fade-in zoom-in duration-500">
-                    <h2 class="text-6xl font-black text-stone-100 mb-4 tracking-tighter">
-                      {boardQuery.data?.status === "Timeout"
-                        ? "Time Out!"
-                        : boardQuery.data?.status}
-                    </h2>
-                    <p class="text-2xl font-bold text-indigo-400 mb-10 tracking-wide uppercase">
-                      {(() => {
-                        const status = boardQuery.data?.status;
-                        const turn = boardQuery.data?.turn;
-                        if (status === "Stalemate") return "Draw";
-
-                        // If Checkmate or Timeout, the player whose turn it is LOST.
-                        const winner = turn === "White" ? "Black" : "White";
-                        if (status === "Timeout")
-                          return `${winner} Wins by Time`;
-                        return `${winner} Wins`;
-                      })()}
-                    </p>
-                    <button
-                      onClick={() => handleReset()}
-                      class="px-10 py-5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-black text-xl shadow-2xl transition-all transform hover:-translate-y-2 active:translate-y-0"
-                    >
-                      New Challenge
-                    </button>
-                  </div>
-                </div>
-              </Show>
-            </div>
-          </div>
-
-          {/* Right Panel: White Player */}
-          <div class="flex flex-col gap-6 w-full max-w-[300px] xl:h-[800px] xl:justify-center order-3">
-            <div class="bg-stone-800 p-6 rounded-2xl shadow-xl border border-stone-700 flex flex-col gap-4 items-center text-center relative overflow-hidden">
-              <div class="w-20 h-20 bg-stone-200 border-4 border-stone-500 rounded-2xl shadow-md flex items-center justify-center text-stone-900 font-bold text-3xl mb-2">
-                W
-              </div>
-              <div>
-                <div class="font-extrabold text-2xl leading-tight text-stone-100">
-                  White
-                </div>
-                <div
-                  class={`text-xs font-bold uppercase tracking-wider ${turn() === "White" ? "text-emerald-400" : "text-stone-500"}`}
+                  onClick={() => handleSquareClick(sq)}
                 >
-                  {turn() === "White" ? "Your Turn" : "Waiting"}
-                </div>
-                <div
-                  class={`text-4xl font-mono font-bold mt-2 ${turn() === "White" ? "text-white" : "text-stone-600"}`}
-                >
-                  {formatTime(whiteTime())}
-                </div>
-              </div>
-
-              {/* Captured Pieces (Black pieces captured by White) */}
-              <div class="flex flex-wrap justify-center gap-1 min-h-[40px] w-full bg-stone-900/50 rounded-lg p-2 border border-stone-700">
-                <For each={boardQuery.data?.capturedPieces?.black}>
-                  {(p) => (
-                    <span
-                      class="text-3xl filter drop-shadow-sm text-stone-400 hover:scale-125 transition-transform cursor-help"
-                      title={`Captured ${p}`}
-                    >
-                      {PIECE_SYMBOLS.Black[p]}
+                  {isLastMove && (
+                    <div style={{ position: "absolute", inset: "0", background: "rgba(253,224,71,0.3)", pointerEvents: "none" }} />
+                  )}
+                  {col === 0 && (
+                    <span style={{
+                      position: "absolute", left: "2px", top: "1px",
+                      fontSize: "clamp(7px, 1.2vmin, 10px)", fontWeight: "bold",
+                      opacity: "0.5", color: isDark ? "#c8c4b8" : "#4a4542",
+                      pointerEvents: "none", lineHeight: "1",
+                    }}>{8 - row}</span>
+                  )}
+                  {row === 7 && (
+                    <span style={{
+                      position: "absolute", right: "2px", bottom: "1px",
+                      fontSize: "clamp(7px, 1.2vmin, 10px)", fontWeight: "bold",
+                      opacity: "0.5", color: isDark ? "#c8c4b8" : "#4a4542",
+                      pointerEvents: "none", lineHeight: "1",
+                    }}>{String.fromCharCode(97 + col)}</span>
+                  )}
+                  {validMoves.includes(sq) && (
+                    hasPiece
+                      ? <div style={{ position: "absolute", inset: "0", border: "3px solid rgba(220,38,38,0.55)", pointerEvents: "none" }} />
+                      : <div style={{ width: "28%", height: "28%", background: "rgba(0,0,0,0.22)", borderRadius: "50%", pointerEvents: "none" }} />
+                  )}
+                  {piece && (
+                    <span style={{
+                      fontSize: "clamp(16px, 5.5vmin, 64px)",
+                      color: piece.color === "White" ? "#f0ede6" : "#181818",
+                      textShadow: piece.color === "White"
+                        ? "0 1px 4px rgba(0,0,0,0.55)"
+                        : "0 1px 4px rgba(255,255,255,0.18)",
+                      userSelect: "none",
+                      zIndex: 20,
+                      position: "relative",
+                    }}>
+                      {PIECE_SYMBOLS[piece.color][piece.piece_type]}
                     </span>
                   )}
-                </For>
-                <Show when={!boardQuery.data?.capturedPieces?.black?.length}>
-                  <span class="text-xs text-stone-600 italic self-center">
-                    No captures
-                  </span>
-                </Show>
-              </div>
+                </button>
+              );
+            })}
 
-              {/* Controls for this side (Takeback / Submit) */}
-              <Show
-                when={
-                  turn() === "Black" || (turn() === "White" && pendingMove())
-                }
-              >
-                <Show when={turn() === "Black"}>
-                  <button
-                    onClick={() => undoMutation.mutate()}
-                    disabled={
-                      undoMutation.isPending ||
-                      (boardQuery.data?.moves?.length || 0) === 0
-                    }
-                    class="w-full mt-4 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-black/20 transition-all uppercase tracking-wider text-sm flex items-center justify-center gap-2"
-                  >
-                    <span>↺</span> Takeback
-                  </button>
-                </Show>
-
-                <Show when={turn() === "White" && pendingMove()}>
-                  <div class="flex gap-2 w-full mt-4">
-                    <button
-                      onClick={handleConfirmMove}
-                      disabled={moveMutation.isPending}
-                      class="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-800 disabled:cursor-not-allowed text-white font-bold py-3 px-2 rounded-xl shadow-lg transition-all uppercase tracking-wider text-sm flex items-center justify-center gap-1"
-                    >
-                      <Show
-                        when={moveMutation.isPending}
-                        fallback={<span>✓ Submit</span>}
-                      >
-                        <span>...</span>
-                      </Show>
-                    </button>
-                    <button
-                      onClick={handleCancelMove}
-                      disabled={moveMutation.isPending}
-                      class="flex-1 bg-stone-600 hover:bg-stone-500 disabled:opacity-50 text-white font-bold py-3 px-2 rounded-xl shadow-lg transition-all uppercase tracking-wider text-sm flex items-center justify-center gap-1"
-                    >
-                      <span>✕</span> Cancel
-                    </button>
+            {boardQuery.data?.status && boardQuery.data.status !== "Ongoing" && (
+              <div style={{
+                position: "absolute", inset: "0",
+                background: "rgba(0,0,0,0.72)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                zIndex: 50, backdropFilter: "blur(3px)",
+              }}>
+                <div style={{
+                  textAlign: "center", padding: "32px 48px",
+                  border: "1px solid #2a2a2a", background: "#0f0f0f",
+                }}>
+                  <div style={{
+                    fontSize: "clamp(22px, 5vmin, 52px)",
+                    fontWeight: "900", letterSpacing: "-0.02em", color: "#f0ede6",
+                    marginBottom: "4px",
+                  }}>
+                    {boardQuery.data.status}
                   </div>
-                </Show>
-              </Show>
-            </div>
+                  <div style={{
+                    fontSize: "clamp(11px, 1.8vmin, 16px)", color: "#6366f1",
+                    textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: "28px",
+                  }}>
+                    {boardQuery.data.status === "Stalemate"
+                      ? "Draw"
+                      : turn === "White" ? "Bot wins" : "You win"}
+                  </div>
+                  <button
+                    onClick={() => resetMutation.mutate()}
+                    style={{
+                      padding: "8px 28px", background: "#312e81", border: "1px solid #4338ca",
+                      color: "#c7d2fe", fontFamily: "inherit", fontSize: "12px",
+                      fontWeight: "bold", textTransform: "uppercase",
+                      letterSpacing: "0.08em", cursor: "pointer",
+                    }}
+                  >
+                    Play Again
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Footer: Move History */}
-      <div class="bg-stone-900 border-t border-stone-800 p-2 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.5)] z-40">
-        <div class="max-w-[1800px] mx-auto flex items-center gap-4 overflow-x-auto scrollbar-thin scrollbar-thumb-stone-600 scrollbar-track-stone-900 px-4 pb-2">
-          <div class="text-xs font-black text-stone-500 uppercase tracking-widest px-3 py-1 bg-stone-800 rounded-md shrink-0">
-            History
-          </div>
-          <div class="flex items-center gap-6 px-2 min-w-max">
-            <For
-              each={Array.from({
-                length: Math.ceil((boardQuery.data?.moves?.length || 0) / 2),
-              })}
-            >
-              {(_, i) => {
-                const index = i();
-                const moveIndex = index * 2;
-                const whiteMove = boardQuery.data?.moves?.[moveIndex];
-                const blackMove = boardQuery.data?.moves?.[moveIndex + 1];
-                return (
-                  <div class="flex items-center text-sm font-mono">
-                    <span class="text-stone-600 mr-2 select-none group-hover:text-stone-500 transition-colors">
-                      {index + 1}.
-                    </span>
-                    <span class="font-bold text-stone-300 px-2 py-0.5 rounded hover:bg-stone-800 transition-colors cursor-pointer">
-                      {whiteMove?.notation}
-                    </span>
-                    <Show when={blackMove}>
-                      <span class="font-bold text-stone-300 px-2 py-0.5 rounded hover:bg-stone-800 transition-colors cursor-pointer ml-1">
-                        {blackMove?.notation}
-                      </span>
-                    </Show>
-                  </div>
-                );
-              }}
-            </For>
-            <Show when={boardQuery.data?.moves?.length === 0}>
-              <span class="text-stone-600 text-sm italic">
-                Waiting for start...
-              </span>
-            </Show>
-            <div id="move-anchor" class="w-2" />
-          </div>
+      <div style={S.controls}>
+        <button
+          onClick={() => setEngineType(engineType === "minimax" ? "neural" : "minimax")}
+          style={S.btn(true, engineType === "neural" ? "#052e16" : undefined)}
+        >
+          {engineType === "minimax" ? "Minimax" : "Neural"}
+        </button>
+
+        <div style={{ width: "1px", height: "20px", background: "#2a2a2a" }} />
+
+        <div style={{
+          flex: "1", textAlign: "center", fontSize: "11px",
+          textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: "bold",
+          color: turn === "Black" ? "#4b5563" : "#9ca3af",
+        }}>
+          {boardQuery.data?.status !== "Ongoing"
+            ? (boardQuery.data?.status ?? "")
+            : turn === "Black" ? "thinking..." : "your move"}
         </div>
+
+        <div style={{ width: "1px", height: "20px", background: "#2a2a2a" }} />
+
+        {pendingMove && turn === "White" && (
+          <>
+            <button
+              onClick={() => moveMutation.mutate(pendingMove)}
+              disabled={moveMutation.isPending}
+              style={S.btnGreen}
+            >
+              {moveMutation.isPending ? "..." : "Confirm"}
+            </button>
+            <button
+              onClick={() => setPendingMove(null)}
+              disabled={moveMutation.isPending}
+              style={S.btn()}
+            >
+              Cancel
+            </button>
+          </>
+        )}
+
+        {!pendingMove && (
+          <button
+            onClick={() => undoMutation.mutate()}
+            disabled={undoMutation.isPending || (boardQuery.data?.moves?.length ?? 0) === 0}
+            style={{ ...S.btn(), opacity: (boardQuery.data?.moves?.length ?? 0) === 0 ? "0.25" : "1" }}
+          >
+            {undoMutation.isPending ? "..." : "Takeback"}
+          </button>
+        )}
+
+        <button
+          onClick={() => resetMutation.mutate()}
+          disabled={resetMutation.isPending}
+          style={S.btn()}
+        >
+          {resetMutation.isPending ? "..." : "New Game"}
+        </button>
+      </div>
+
+      <div style={S.history}>
+        {(boardQuery.data?.moves?.length ?? 0) === 0 ? (
+          <span style={{ fontSize: "11px", color: "#2a2a2a", fontStyle: "italic" }}>—</span>
+        ) : (
+          Array.from({ length: Math.ceil((boardQuery.data?.moves?.length ?? 0) / 2) }, (_, i) => {
+            const wm = boardQuery.data?.moves?.[i * 2];
+            const bm = boardQuery.data?.moves?.[i * 2 + 1];
+            return (
+              <span key={i} style={{ fontSize: "11px", whiteSpace: "nowrap" }}>
+                <span style={{ color: "#374151", marginRight: "3px" }}>{i + 1}.</span>
+                <span style={{ color: "#c9c5bd", marginRight: "4px" }}>{wm?.notation}</span>
+                {bm && <span style={{ color: "#6b7280" }}>{bm.notation}</span>}
+              </span>
+            );
+          })
+        )}
       </div>
     </div>
   );

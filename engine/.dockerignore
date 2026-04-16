@@ -1,1 +1,8 @@
 target
+train
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+model.onnx
+checkpoints

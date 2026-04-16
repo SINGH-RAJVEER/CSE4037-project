@@ -1,0 +1,20 @@
+{
+  "name": "chess-bot",
+  "private": true,
+  "workspaces": ["application", "engine"],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "build:server": "turbo run build:server",
+    "lint": "turbo run lint",
+    "check": "turbo run check",
+    "test": "turbo run test"
+  },
+  "devDependencies": {
+    "turbo": "latest"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "packageManager": "bun@1.2.0"
+}

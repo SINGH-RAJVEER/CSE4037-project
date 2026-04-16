@@ -1,0 +1,10 @@
+**/node_modules
+**/target
+**/.output
+**/.turbo
+**/.nitro
+**/.tanstack
+**/.vercel
+**/*.db
+**/.env
+**/.env.*
